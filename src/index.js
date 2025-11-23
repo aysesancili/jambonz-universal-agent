@@ -13,7 +13,7 @@ const server = createServer((req, res) => {
   // Diğer istekler için 404, websocket upgrade'i kütüphane halleder
 });
 
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 3334;
 server.listen(port, () => {
   logger.info(`Universal Agent listening on port ${port}`);
 });
