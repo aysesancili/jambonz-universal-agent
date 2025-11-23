@@ -38,7 +38,7 @@ jobs:
           # .env dosyasını oluştur (Secrets'tan)
           echo 'NODE_ENV=production' > .env
           echo 'LOG_LEVEL=info' >> .env
-          echo 'PORT=3000' >> .env
+          echo 'PORT=3334' >> .env
           echo 'BACKEND_URL=${{ secrets.BACKEND_URL }}' >> .env
           echo 'BACKEND_API_KEY=${{ secrets.BACKEND_API_KEY }}' >> .env
           echo 'GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}' >> .env
