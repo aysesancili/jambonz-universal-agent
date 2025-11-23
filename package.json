@@ -9,7 +9,6 @@
   },
   "dependencies": {
     "@google/generative-ai": "^0.2.1",
-    "@jambonz/node-client-ws": "^0.2.12",
     "axios": "^1.6.7",
     "dotenv": "^16.4.5",
     "pino": "^8.19.0",
