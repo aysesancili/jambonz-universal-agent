@@ -4,42 +4,65 @@ const GeminiClient = require('./llm/google');
 
 module.exports = async function sessionHandler(session) {
   const { call_sid, direction, from, to } = session;
-  logger.info({ call_sid, from, to, direction }, 'Handling new session');
+
+  // Oturum kapanış logları
+  session.on('close', (code, reason) => logger.info({ call_sid, code, reason }, 'Session closed'));
+  session.on('error', (err) => logger.error({ err, call_sid }, 'Session error'));
+
+  logger.info({ call_sid, from, to, direction }, '📞 Handling new session');
 
   try {
-    // 1. Config Yükle
+    // 1. Config Yükle (Backend'den)
     const targetNumber = direction === 'inbound' ? to : from;
     const config = await loadConfig(targetNumber);
 
     if (!config) {
-      logger.warn({ targetNumber }, 'No config found');
-      session.say({ text: 'Yapılandırma hatası.' }).hangup().send();
+      logger.warn({ targetNumber }, '❌ No config found, reject call');
+      session.say({ text: 'Yapılandırma hatası. Lütfen yönetici ile görüşün.' }).hangup().send();
       return;
     }
 
-    logger.info({ agentName: config.name }, 'Agent config loaded');
+    // Milyon Dolarlık Log: Gelen konfigürasyonu görelim
+    logger.info({ agentName: config.name, config }, '🔥 CONFIG RECEIVED FROM BACKEND');
 
     // 2. LLM Başlat
-    const llmApiKey = process.env.GOOGLE_API_KEY;
+    const llmApiKey = process.env.GOOGLE_API_KEY; 
     const llmModel = config.llm?.model || 'gemini-2.0-flash-exp';
     const systemPrompt = config.llm?.systemPrompt || 'Sen yardımsever bir asistansın.';
-    
+
     const llm = new GeminiClient(llmApiKey, llmModel);
     await llm.startChat(systemPrompt);
+
+    // Ortak Konuşma Döngüsü (Recursion yerine Event Loop)
+    const listenAndRespond = () => {
+        session
+            .gather({
+                input: ['speech'],
+                timeout: 5,
+                recognizer: {
+                    vendor: config.stt?.vendor || 'deepgram',
+                    label: config.stt?.label || 'stt',
+                    language: 'tr-TR',
+                    interimResults: true,
+                    punctuation: true
+                },
+                actionHook: '/onSpeech'
+            })
+            .send();
+    };
 
     // 3. Konuşma Algılandığında (Action Hook)
     session.on('/onSpeech', async (evt) => {
         const speech = evt.speech?.alternatives?.[0]?.transcript;
         
         if (speech) {
-            logger.info({ speech }, 'User input');
+            logger.info({ speech }, '🎤 User input');
 
-            // LLM'e sor
+            // LLM'e sor (Streaming yanıt eklenebilir, şimdilik bloklu)
             const aiResponse = await llm.sendMessage(speech);
-            logger.info({ aiResponse }, 'AI response');
+            logger.info({ aiResponse }, '🤖 AI response');
 
-            // Cevap ver ve tekrar dinle (Zincirleme)
-            // reply() kullanarak hook'a yanıt veriyoruz, gecikmeyi önlüyoruz.
+            // Cevap ver
             session
                 .say({
                     text: aiResponse,
@@ -50,6 +73,7 @@ module.exports = async function sessionHandler(session) {
                         voice: config.tts?.voiceId || 'Rachel'
                     }
                 })
+                // Cevap bittiğinde tekrar dinle
                 .gather({
                     input: ['speech'],
                     timeout: 5,
@@ -62,11 +86,13 @@ module.exports = async function sessionHandler(session) {
                     },
                     actionHook: '/onSpeech'
                 })
-                .reply(); // Bu çok önemli! Hook'a cevap.
+                .reply(); 
         } else {
-            logger.info('No speech detected or timeout');
             // Sessizlik durumunda tekrar dinle
-            session
+            // logger.debug('No speech detected, listening again...');
+            session.reply(); // Ack
+            // Loop döngüsü
+             session
                 .gather({
                     input: ['speech'],
                     timeout: 5,
@@ -79,15 +105,22 @@ module.exports = async function sessionHandler(session) {
                     },
                     actionHook: '/onSpeech'
                 })
-                .reply();
+                .send();
         }
     });
 
-    // 4. Başlat (Açılış)
-    const greetingText = config.greeting || "Merhaba, size nasıl yardımcı olabilirim?";
-
+    // 4. Başlat (Açılış Stratejisi)
+    let greetingText = config.greeting; // Dashboard'dan gelirse kullan
+    
     if (direction === 'inbound') {
         logger.info('Inbound call: Agent greeting first');
+
+        // Eğer sabit mesaj yoksa, LLM'e ürettir (Dinamik Giriş)
+        if (!greetingText) {
+             logger.info('Generating dynamic greeting from LLM...');
+             greetingText = await llm.sendMessage("Çağrı başladı. Rolüne uygun, kısa ve doğal bir açılış cümlesi söyle.");
+        }
+
         session
             .answer()
             .pause({ length: 0.5 })
@@ -114,7 +147,7 @@ module.exports = async function sessionHandler(session) {
             })
             .send();
     } else {
-        // Outbound: Önce dinle
+        // OUTBOUND: Önce dinle
         logger.info('Outbound call: Waiting for user');
         session
             .answer()
