@@ -12,7 +12,7 @@ module.exports = async function sessionHandler(session) {
     const config = await loadConfig(targetNumber);
 
     if (!config) {
-      logger.warn({ targetNumber }, 'No config found, reject call');
+      logger.warn({ targetNumber }, 'No config found');
       session.say({ text: 'Yapılandırma hatası.' }).hangup().send();
       return;
     }
@@ -20,43 +20,26 @@ module.exports = async function sessionHandler(session) {
     logger.info({ agentName: config.name }, 'Agent config loaded');
 
     // 2. LLM Başlat
-    const llmApiKey = process.env.GOOGLE_API_KEY; 
+    const llmApiKey = process.env.GOOGLE_API_KEY;
     const llmModel = config.llm?.model || 'gemini-2.0-flash-exp';
     const systemPrompt = config.llm?.systemPrompt || 'Sen yardımsever bir asistansın.';
-
+    
     const llm = new GeminiClient(llmApiKey, llmModel);
     await llm.startChat(systemPrompt);
 
-    // 3. Konuşma Döngüsü
-    const listenAndRespond = () => {
-        session
-            .gather({
-                input: ['speech'],
-                timeout: 5,
-                recognizer: {
-                    vendor: config.stt?.vendor || 'deepgram',
-                    label: config.stt?.label || 'stt',
-                    language: 'tr-TR',
-                    interimResults: true,
-                    punctuation: true
-                },
-                actionHook: '/onSpeech' // Bu path'i dinleyeceğiz
-            })
-            .send();
-    };
-
-    // 4. Konuşma Algılandığında (Action Hook)
+    // 3. Konuşma Algılandığında (Action Hook)
     session.on('/onSpeech', async (evt) => {
-        // Konuşma var mı?
-        if (evt.speech && evt.speech.alternatives && evt.speech.alternatives.length > 0) {
-            const userText = evt.speech.alternatives[0].transcript;
-            logger.info({ userText }, 'User input');
+        const speech = evt.speech?.alternatives?.[0]?.transcript;
+        
+        if (speech) {
+            logger.info({ speech }, 'User input');
 
             // LLM'e sor
-            const aiResponse = await llm.sendMessage(userText);
+            const aiResponse = await llm.sendMessage(speech);
             logger.info({ aiResponse }, 'AI response');
 
-            // Cevap ver
+            // Cevap ver ve tekrar dinle (Zincirleme)
+            // reply() kullanarak hook'a yanıt veriyoruz, gecikmeyi önlüyoruz.
             session
                 .say({
                     text: aiResponse,
@@ -67,11 +50,6 @@ module.exports = async function sessionHandler(session) {
                         voice: config.tts?.voiceId || 'Rachel'
                     }
                 })
-                // Cevap okunduktan sonra ('exec' event'i komut bitince tetiklenir mi? 
-                // Jambonz node client'ta 'verb:hook' mantığı vardır. 
-                // En garantisi iç içe göndermek ama zincirleme yapıda 'exec' veya callback kullanabiliriz.
-                // Ancak node-client-ws kütüphanesinde .send() asenkrondur.
-                // Basitçe yeni bir gather gönderelim.
                 .gather({
                     input: ['speech'],
                     timeout: 5,
@@ -84,15 +62,28 @@ module.exports = async function sessionHandler(session) {
                     },
                     actionHook: '/onSpeech'
                 })
-                .send();
+                .reply(); // Bu çok önemli! Hook'a cevap.
         } else {
-            // Sessizlik veya timeout -> Tekrar dinle
             logger.info('No speech detected or timeout');
-            listenAndRespond();
+            // Sessizlik durumunda tekrar dinle
+            session
+                .gather({
+                    input: ['speech'],
+                    timeout: 5,
+                    recognizer: {
+                        vendor: config.stt?.vendor || 'deepgram',
+                        label: config.stt?.label || 'stt',
+                        language: 'tr-TR',
+                        interimResults: true,
+                        punctuation: true
+                    },
+                    actionHook: '/onSpeech'
+                })
+                .reply();
         }
     });
 
-    // 5. Açılış
+    // 4. Başlat (Açılış)
     const greetingText = config.greeting || "Merhaba, size nasıl yardımcı olabilirim?";
 
     if (direction === 'inbound') {
@@ -109,7 +100,6 @@ module.exports = async function sessionHandler(session) {
                     voice: config.tts?.voiceId || 'Rachel'
                 }
             })
-            // Konuşma bitince dinlemeye geçmesi için gather'ı zincirliyoruz
             .gather({
                 input: ['speech'],
                 timeout: 5,
@@ -124,8 +114,8 @@ module.exports = async function sessionHandler(session) {
             })
             .send();
     } else {
-        // OUTBOUND: Önce dinle (Müşteri "Alo" desin)
-        logger.info('Outbound call: Waiting for user to speak');
+        // Outbound: Önce dinle
+        logger.info('Outbound call: Waiting for user');
         session
             .answer()
             .pause({ length: 0.5 })
@@ -145,7 +135,7 @@ module.exports = async function sessionHandler(session) {
     }
 
   } catch (error) {
-    logger.error({ err: error }, 'Error in session handler');
+    logger.error({ err: error }, 'Handler Error');
     session.hangup().send();
   }
 };
